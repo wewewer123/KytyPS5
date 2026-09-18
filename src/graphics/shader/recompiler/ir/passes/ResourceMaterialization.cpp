@@ -505,10 +505,13 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, Materialize
 		image.cube      = DescriptorIsCube(descriptor);
 		const auto format =
 		    static_cast<Prospero::BufferFormat>((descriptor.dwords[1] >> 20u) & 0x1ffu);
-		if (base.atomic && format != Prospero::BufferFormat::k32UInt) {
+		const auto required_atomic_format = base.atomic64 ? Prospero::BufferFormat::k32_32UInt
+		                                                  : Prospero::BufferFormat::k32UInt;
+		if (base.atomic && format != required_atomic_format) {
 			return SpecializationFail(
-			    fmt::format("atomic image descriptor {} uses unsupported format {}", i,
-			                static_cast<uint32_t>(format)));
+			    fmt::format("atomic image descriptor {} uses unsupported format {} for a {}-bit "
+			                "atomic",
+			                i, static_cast<uint32_t>(format), base.atomic64 ? 64 : 32));
 		}
 		const bool storage      = base.resource_class == ImageResourceClass::Storage;
 		image.fmask             = Prospero::IsFmaskTextureFormat(format);
@@ -647,8 +650,7 @@ bool BuildSamplerPlan(const ShaderInfo& base, const Images& images, SamplerPlan&
 }
 
 static std::vector<ResourceBlock> ResourceControlFlow(const Program& program) {
-	// Any shader write may alias a scalar predicate read, including on a later loop visit.
-	if (program.blocks.size() != program.block_info.size() || HasShaderMemoryWrites(program)) {
+	if (program.blocks.size() != program.block_info.size()) {
 		return {};
 	}
 	std::unordered_map<uint32_t, uint32_t> indices;
@@ -688,6 +690,12 @@ static std::vector<ResourceBlock> ResourceControlFlow(const Program& program) {
 			const auto op     = inst.GetOpcode();
 			const auto buffer = BufferAccessOf(op);
 			const auto image  = ImageOpcodeInfoOf(op);
+			// Any shader write may alias a scalar predicate read, including on a later loop visit.
+			if (buffer == BufferAccess::Write || buffer == BufferAccess::Atomic ||
+			    image.access == ImageAccess::Write || image.access == ImageAccess::Atomic ||
+			    AddressOpcodeInfoOf(op).access == AddressAccess::Write) {
+				return {};
+			}
 			if (buffer == BufferAccess::None && image.access == ImageAccess::None) {
 				continue;
 			}

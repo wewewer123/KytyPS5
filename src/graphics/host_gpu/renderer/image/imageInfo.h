@@ -12,18 +12,20 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace Libs::Graphics {
 
 enum class VideoOutCompression : uint8_t { Uncompressed, Dcc256_256_0, Dcc256_64_64, Unsupported };
 
-enum class ImageMetadataKind : uint8_t { None, Htile, Dcc };
+enum class ImageMetadataKind : uint8_t { None, Htile, Dcc, Cmask };
 
 struct ImageMetadataInfo {
 	GuestRange          range;
 	ImageMetadataKind   kind               = ImageMetadataKind::None;
 	uint32_t            control            = 0;
 	uint32_t            dcc_clear_word           = 0;
+	uint32_t            dcc_clear_word_hi        = 0;
 	VideoOutCompression compression        = VideoOutCompression::Uncompressed;
 	bool                stencil_compressed = false;
 	bool                dcc_clear_register_valid = false;
@@ -159,7 +161,6 @@ struct ImageViewInfo {
 	vk::ImageAspectFlags aspect      = vk::ImageAspectFlagBits::eColor;
 	uint32_t             base_level  = 0;
 	uint32_t             level_count = 1;
-	uint32_t             min_lod     = 0; // U4.8 clamp relative to base_level.
 	uint32_t             base_layer  = 0;
 	uint32_t             layer_count = 1;
 	vk::ComponentMapping mapping     = {};
@@ -168,10 +169,9 @@ struct ImageViewInfo {
 	[[nodiscard]] bool operator==(const ImageViewInfo& rhs) const noexcept {
 		return format == rhs.format && type == rhs.type && aspect == rhs.aspect &&
 		       base_level == rhs.base_level && level_count == rhs.level_count &&
-		       min_lod == rhs.min_lod && base_layer == rhs.base_layer &&
-		       layer_count == rhs.layer_count && mapping.r == rhs.mapping.r &&
-		       mapping.g == rhs.mapping.g && mapping.b == rhs.mapping.b &&
-		       mapping.a == rhs.mapping.a && usage == rhs.usage;
+		       base_layer == rhs.base_layer && layer_count == rhs.layer_count &&
+		       mapping.r == rhs.mapping.r && mapping.g == rhs.mapping.g &&
+		       mapping.b == rhs.mapping.b && mapping.a == rhs.mapping.a && usage == rhs.usage;
 	}
 };
 
@@ -367,7 +367,36 @@ inline constexpr std::array<VideoOutFormatPolicy, 6> VIDEO_OUT_FORMAT_POLICIES {
 	return false;
 }
 
+[[nodiscard]] inline float DecodeSmallFloat(uint32_t bits, uint32_t mantissa_bits) {
+	const auto exponent = (bits >> mantissa_bits) & 0x1fu;
+	const auto mantissa = bits & ((1u << mantissa_bits) - 1u);
+	const auto scale    = 1.0F / static_cast<float>(1u << mantissa_bits);
+	if (exponent == 0) {
+		return std::ldexp(static_cast<float>(mantissa) * scale, -14);
+	}
+	if (exponent == 0x1fu) {
+		return mantissa != 0 ? std::numeric_limits<float>::quiet_NaN()
+		                     : std::numeric_limits<float>::infinity();
+	}
+	return std::ldexp(1.0F + static_cast<float>(mantissa) * scale, static_cast<int>(exponent) - 15);
+}
+
+[[nodiscard]] inline float DecodeHalfFloat(uint32_t bits) {
+	const auto value = DecodeSmallFloat(bits & 0x7fffu, 10);
+	return (bits & 0x8000u) != 0 ? -value : value;
+}
+
+// Formats whose clear needs CB_COLOR_CLEAR_WORD1; decoding them from word0 alone is wrong.
+[[nodiscard]] inline bool PackedColorClearNeedsHighWord(vk::Format format) {
+	switch (format) {
+		case vk::Format::eR16G16B16A16Sfloat:
+		case vk::Format::eR32G32B32A32Sfloat: return true;
+		default: return false;
+	}
+}
+
 [[nodiscard]] inline bool DecodePackedColorClear(vk::Format format, uint32_t packed,
+                                                 uint32_t             packed_hi,
                                                  vk::ClearColorValue& clear) {
 	vk::ClearColorValue next {};
 	const auto unorm8 = [](uint32_t value) { return static_cast<float>(value & 0xffu) / 255.0f; };
@@ -418,7 +447,43 @@ inline constexpr std::array<VideoOutFormatPolicy, 6> VIDEO_OUT_FORMAT_POLICIES {
 			next.float32[2] = static_cast<float>(packed & 0x3ffu) / 1023.0f;
 			next.float32[3] = static_cast<float>((packed >> 30u) & 0x3u) / 3.0f;
 			break;
+		case vk::Format::eR16G16B16A16Sfloat:
+			next.float32[0] = DecodeHalfFloat(packed);
+			next.float32[1] = DecodeHalfFloat(packed >> 16u);
+			next.float32[2] = DecodeHalfFloat(packed_hi);
+			next.float32[3] = DecodeHalfFloat(packed_hi >> 16u);
+			break;
+		case vk::Format::eB10G11R11UfloatPack32:
+			next.float32[0] = DecodeSmallFloat(packed & 0x7ffu, 6);
+			next.float32[1] = DecodeSmallFloat((packed >> 11u) & 0x7ffu, 6);
+			next.float32[2] = DecodeSmallFloat((packed >> 22u) & 0x3ffu, 5);
+			next.float32[3] = 1.0F;
+			break;
+		case vk::Format::eR16G16Sfloat:
+			next.float32[0] = DecodeHalfFloat(packed);
+			next.float32[1] = DecodeHalfFloat(packed >> 16u);
+			break;
+		case vk::Format::eR32G32B32A32Sfloat: {
+			const auto rgb   = std::bit_cast<float>(packed);
+			const auto alpha = std::bit_cast<float>(packed_hi);
+			if (!std::isfinite(rgb) || !std::isfinite(alpha)) {
+				return false;
+			}
+			next.float32[0] = rgb;
+			next.float32[1] = rgb;
+			next.float32[2] = rgb;
+			next.float32[3] = alpha;
+			break;
+		}
 		default: return false;
+	}
+	// Integer targets carry raw bits; a NaN pattern there is a legitimate value, not a bad decode.
+	const bool integer_clear =
+	    format == vk::Format::eR32Uint || format == vk::Format::eR32Sint;
+	for (const auto component: next.float32) {
+		if (!integer_clear && !std::isfinite(component)) {
+			return false;
+		}
 	}
 	clear = next;
 	return true;

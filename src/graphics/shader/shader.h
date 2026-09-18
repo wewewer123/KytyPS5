@@ -97,11 +97,8 @@ struct ShaderMeshInputInfo: ShaderWorkgroupInputInfo {
 		}
 	}
 	[[nodiscard]] constexpr uint32_t InputPrimitiveStep() const {
-		switch (static_cast<Prospero::PrimitiveType>(input_primitive)) {
-			case Prospero::PrimitiveType::kTriFan:
-			case Prospero::PrimitiveType::kTriStrip: return 1u;
-			default: return InputPrimitiveSize();
-		}
+		return input_primitive == static_cast<uint32_t>(Prospero::PrimitiveType::kTriStrip)
+		           ? 1u : InputPrimitiveSize();
 	}
 	[[nodiscard]] constexpr uint32_t InputPrimitiveCount(uint32_t vertices) const {
 		const auto size = InputPrimitiveSize();
@@ -160,7 +157,6 @@ struct ShaderPixelInputInfo {
 	uint32_t                                       ps_system_input_base         = 0;
 	uint32_t                                       custom_interpolation_mask    = 0;
 	uint32_t                                       ps_perspective_center_vgpr   = UINT32_MAX;
-	uint32_t                                       ps_perspective_centroid_vgpr = UINT32_MAX;
 	uint8_t                                        target_output_mode[8]        = {};
 	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
 	uint32_t                                       scratch_size_dwords          = 0;
@@ -303,6 +299,7 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderComputeInputInfo& info);
+bool ShaderAddressValid(uint64_t addr);
 
 } // namespace Libs::Graphics
 

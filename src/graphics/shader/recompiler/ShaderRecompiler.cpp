@@ -87,6 +87,7 @@ struct EmbeddedFetchSgprInfo {
 	EmbeddedFetchValueType type      = EmbeddedFetchValueType::Unknown;
 	int                    attrib_id = 0;
 	uint32_t               value     = 0;
+	std::vector<uint32_t>  prolog_loads;
 };
 
 using EmbeddedFetchVectorLanes = std::map<uint64_t, EmbeddedFetchSgprInfo>;
@@ -104,6 +105,8 @@ void ClearEmbeddedFetchVectorLanes(EmbeddedFetchVectorLanes* lanes, uint32_t reg
 	const auto last  = lanes->lower_bound(EmbeddedFetchVectorLaneKey(reg + 1u, 0));
 	lanes->erase(first, last);
 }
+
+using EmbeddedFetchData = Frontend::EmbeddedFetchPlan;
 
 bool IsDecodedSgpr(const Decoder::Operand& op) {
 	return op.kind == Decoder::OperandKind::Sgpr || op.kind == Decoder::OperandKind::VccLo ||
@@ -208,12 +211,13 @@ int BufferTableAttribFromOffset(uint32_t raw_offset, int dword) {
 	return static_cast<int>((raw_offset + static_cast<uint32_t>(dword) * 4u) / 16u);
 }
 
-Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
-    const Decoder::Program& decoded, const ShaderVertexInputInfo* input_info,
-    uint32_t user_data_base, uint32_t user_data_count, uint32_t wave_size) {
+EmbeddedFetchData DetectEmbeddedVertexFetch(const Decoder::Program&      decoded,
+                                            const ShaderVertexInputInfo* input_info,
+                                            uint32_t user_data_base, uint32_t user_data_count,
+                                            uint32_t wave_size) {
 	const uint32_t    vertex_index_reg   = input_info->logical_stage == ShaderType::Local ? 2u : 5u;
 	const uint32_t    instance_index_reg = input_info->logical_stage == ShaderType::Local ? 5u : 8u;
-	Frontend::EmbeddedFetchPlan data;
+	EmbeddedFetchData data;
 	data.loads.reserve(input_info->resources_num);
 	int32_t vertex_offset_candidate   = -1;
 	int32_t instance_offset_candidate = -1;
@@ -322,6 +326,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 						auto& dst = sgprs[DecodedSgprReg(inst.dst)];
 						dst.type  = EmbeddedFetchValueType::Constant;
 						dst.value = value;
+						dst.prolog_loads.clear();
 					} else {
 						ClearEmbeddedFetchSgprs(sgprs, inst.dst, 1);
 					}
@@ -332,6 +337,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 					auto& dst = sgprs[DecodedSgprReg(inst.dst)];
 					dst.type  = EmbeddedFetchValueType::Constant;
 					dst.value = inst.src0.value;
+					dst.prolog_loads.clear();
 				}
 				break;
 			default:
@@ -348,6 +354,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 								auto& dst        = sgprs[register_id + i];
 								dst.type         = EmbeddedFetchValueType::Attrib;
 								dst.attrib_id    = index + static_cast<int>(i);
+								dst.prolog_loads = {inst.pc};
 							}
 						} else {
 							ClearEmbeddedFetchSgprs(sgprs, inst.dst, DecodedDstSize(inst));
@@ -365,6 +372,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 								dst.type  = EmbeddedFetchValueType::Buffer;
 								dst.attrib_id =
 								    BufferTableAttribFromOffset(raw_offset, static_cast<int>(i));
+								dst.prolog_loads = {inst.pc};
 							}
 						} else if (IsDecodedSgpr(inst.src1) &&
 						           DecodedSgprReg(inst.src1) < sgprs.size() &&
@@ -376,6 +384,8 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 								auto& dst        = sgprs[register_id + i];
 								dst.type         = EmbeddedFetchValueType::Buffer;
 								dst.attrib_id    = sgprs[DecodedSgprReg(inst.src1)].attrib_id;
+								dst.prolog_loads = sgprs[DecodedSgprReg(inst.src1)].prolog_loads;
+								dst.prolog_loads.push_back(inst.pc);
 							}
 						} else {
 							ClearEmbeddedFetchSgprs(sgprs, inst.dst, DecodedDstSize(inst));
@@ -414,6 +424,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 									break;
 								default: dst.value = src0 + src1; break;
 							}
+							dst.prolog_loads.clear();
 						} else {
 							ClearEmbeddedFetchSgprs(sgprs, inst.dst, 1);
 						}
@@ -436,6 +447,7 @@ Frontend::EmbeddedFetchPlan DetectEmbeddedVertexFetch(
 						load.pc           = inst.pc;
 						load.attrib_id    = buffer.attrib_id;
 						load.components   = DecodedDstSize(inst);
+						load.prolog_loads = buffer.prolog_loads;
 					}
 				}
 				break;
@@ -557,7 +569,7 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 		     static_cast<uint64_t>(cfg.natural_loops.size()), phase_ms());
 	}
 
-	Frontend::EmbeddedFetchPlan embedded_fetch;
+	EmbeddedFetchData embedded_fetch;
 	if ((options.stage == ShaderType::Vertex || options.stage == ShaderType::Local) &&
 	    options.input_info.vertex != nullptr && options.input_info.vertex->fetch_embedded) {
 		embedded_fetch = DetectEmbeddedVertexFetch(

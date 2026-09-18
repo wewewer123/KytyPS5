@@ -49,6 +49,7 @@
 // IWYU pragma: no_include <intrin.h>
 
 #define KYTY_ENABLE_DEBUG_PRINTF
+#define KYTY_DBG_INPUT
 
 namespace Libs::Graphics {
 
@@ -200,8 +201,6 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		vk::PhysicalDeviceVulkan13Features features13 {};
 
 		vk::PhysicalDeviceColorWriteEnableFeaturesEXT color_write_ext {};
-		vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
-		color_write_ext.pNext = &image_view_min_lod;
 
 		vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable {};
 		depth_clip_enable.pNext = &color_write_ext;
@@ -235,10 +234,6 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 #if !defined(__APPLE__)
 			skip_device = true;
 #endif
-		}
-		if (image_view_min_lod.minLod != VK_TRUE) {
-			LOGF("image view minLod is not supported\n");
-			skip_device = true;
 		}
 
 		if (depth_clip_control.depthClipControl != VK_TRUE) {
@@ -519,14 +514,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	depth_clip_enable.depthClipEnable = VK_TRUE;
 
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
-	vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
-	image_view_min_lod.minLod = VK_TRUE;
-	depth_clip_control.pNext  = &image_view_min_lod;
 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable, so drop those
 	// feature structs from the chain on macOS (the renderer falls back to default depth
 	// clipping and static color-write masks).
 #if !defined(__APPLE__)
-	image_view_min_lod.pNext = &depth_clip_enable;
+	depth_clip_control.pNext = &depth_clip_enable;
 #endif
 	depth_clip_control.depthClipControl = VK_TRUE;
 
@@ -566,8 +558,32 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		provoking_vertex.pNext = supported_features2.pNext;
 		supported_features2.pNext = &provoking_vertex;
 	}
+	// RDNA selects a 64-bit image atomic through DMASK; without this feature such a shader cannot
+	// be translated at all, so the guest's 64-bit visibility-buffer passes depend on it.
+	const bool image_atomic_int64_extension =
+	    HasExtension(device_extensions, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
+	vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT supported_image_atomic_int64 {};
+	if (image_atomic_int64_extension) {
+		supported_image_atomic_int64.pNext = supported_features2.pNext;
+		supported_features2.pNext          = &supported_image_atomic_int64;
+	}
+	// Viewing a block-compressed array through an uncompressed format is limited to a single layer
+	// unless maintenance6 says otherwise, and guests do view whole BC arrays that way.
+	const bool maintenance6_extension =
+	    HasExtension(device_extensions, VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+	vk::PhysicalDeviceMaintenance6FeaturesKHR supported_maintenance6 {};
+	if (maintenance6_extension) {
+		supported_maintenance6.pNext = supported_features2.pNext;
+		supported_features2.pNext    = &supported_maintenance6;
+	}
 	physical_device.getFeatures2(&supported_features2);
 	graphics.mesh_shader_enabled = mesh_extension && supported_mesh.meshShader;
+	graphics.image_atomic_int64_enabled =
+	    image_atomic_int64_extension && supported_image_atomic_int64.shaderImageInt64Atomics == VK_TRUE;
+	LOGF("Vulkan 64-bit image atomics: %s\n",
+	     graphics.image_atomic_int64_enabled ? "Yes" : "No");
+
+	graphics.maintenance6_enabled = maintenance6_extension && supported_maintenance6.maintenance6;
 
 	vk::PhysicalDeviceSubgroupSizeControlProperties subgroup_size_control {};
 
@@ -580,7 +596,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	if (graphics.mesh_shader_enabled) {
 		subgroup_size_control.pNext = &graphics.mesh_shader_properties;
 	}
+	vk::PhysicalDeviceMaintenance6PropertiesKHR maintenance6_properties {};
+	if (graphics.maintenance6_enabled) {
+		maintenance6_properties.pNext = properties2.pNext;
+		properties2.pNext             = &maintenance6_properties;
+	}
 	physical_device.getProperties2(&properties2);
+	graphics.block_texel_view_multiple_layers =
+	    graphics.maintenance6_enabled &&
+	    maintenance6_properties.blockTexelViewCompatibleMultipleLayers == VK_TRUE;
+	LOGF("Vulkan block texel view multiple layers: %s\n",
+	     graphics.block_texel_view_multiple_layers ? "Yes" : "No");
 
 	graphics.subgroup_size                 = properties11.subgroupSize;
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;
@@ -680,6 +706,18 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		provoking_vertex.pNext = const_cast<void*>(create_info.pNext);
 		provoking_vertex.transformFeedbackPreservesProvokingVertex = VK_FALSE;
 		create_info.pNext = &provoking_vertex;
+	}
+	vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64 {};
+	if (graphics.image_atomic_int64_enabled) {
+		image_atomic_int64.pNext                  = const_cast<void*>(create_info.pNext);
+		image_atomic_int64.shaderImageInt64Atomics = VK_TRUE;
+		create_info.pNext                          = &image_atomic_int64;
+	}
+	vk::PhysicalDeviceMaintenance6FeaturesKHR maintenance6 {};
+	if (graphics.maintenance6_enabled) {
+		maintenance6.pNext        = const_cast<void*>(create_info.pNext);
+		maintenance6.maintenance6 = VK_TRUE;
+		create_info.pNext         = &maintenance6;
 	}
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
@@ -992,8 +1030,7 @@ void WindowContext::CreateVulkan() {
 
 	std::vector<const char*> device_extensions = {
 	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-	    VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-	    "VK_KHR_maintenance1"};
+	    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, "VK_KHR_maintenance1"};
 
 #if defined(__APPLE__)
 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable; the renderer
@@ -1057,7 +1094,9 @@ void WindowContext::CreateVulkan() {
 		for (const auto* extension: {VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,
-		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME}) {
+		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
+		                             VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME,
+		                             VK_KHR_MAINTENANCE_6_EXTENSION_NAME}) {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}

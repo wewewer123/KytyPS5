@@ -12,6 +12,7 @@ bool Translator::EmitScalar(const Decoder::Instruction& inst) {
 		case O::S_WQM_B64: S_WQM(inst, true); return true;
 		case O::S_GETPC_B64: S_GETPC_B64(inst); return true;
 		case O::S_SETPC_B64: return true;
+		case O::S_SWAPPC_B64: return true;
 		case O::S_SUBVECTOR_LOOP_BEGIN: S_SUBVECTOR_LOOP(inst, true); return true;
 		case O::S_SUBVECTOR_LOOP_END: S_SUBVECTOR_LOOP(inst, false); return true;
 		case O::S_CSELECT_B32: S_CSELECT_B32(inst); return true;
@@ -179,7 +180,6 @@ bool Translator::EmitScalar(const Decoder::Instruction& inst) {
 		case O::S_LSHR_B64:
 			return SimpleInteger(inst, IR::ValueOpcode::ShiftRightLogical64, IR::Type::U64, false,
 			                     false, true);
-		case O::S_ASHR_I64: return S_ASHR_I64(inst);
 
 		case O::S_ANDN2_B32:
 			return ComposedIntegerBinary(inst, IR::ValueOpcode::BitwiseAnd32, true, false, true);
@@ -213,6 +213,7 @@ bool Translator::EmitScalar(const Decoder::Instruction& inst) {
 		case O::S_PACK_HH_B32_B16: return PackB16(inst, true, true);
 
 		case O::S_NOP:
+		case O::S_CBRANCH_CDBGSYS:
 		case O::S_SLEEP:
 		case O::S_SETPRIO:
 		case O::S_TRAP: EmitControlNop(); return true;
@@ -228,7 +229,6 @@ bool Translator::EmitScalar(const Decoder::Instruction& inst) {
 		case O::S_CBRANCH_VCCNZ:
 		case O::S_CBRANCH_EXECZ:
 		case O::S_CBRANCH_EXECNZ:
-		case O::S_CBRANCH_CDBGSYS:
 		case O::S_ENDPGM: return true;
 		default: return false;
 	}

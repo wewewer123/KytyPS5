@@ -77,6 +77,10 @@ void SetStatus(QComboBox* combo, Configuration::GameStatus status) {
 	combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+QIcon StandardIcon(QStyle::StandardPixmap icon) {
+	return QApplication::style()->standardIcon(icon);
+}
+
 QString GetPathText(const Configuration& info) {
 	return !info.game_path.isEmpty() ? info.game_path : info.basedir;
 }
@@ -274,11 +278,11 @@ void ConfigurationItem::UpdateIcon() {
 	}
 
 	if (m_running) {
-		setIcon(NameColumn, QApplication::style()->standardIcon(QStyle::SP_MediaPlay));
+		setIcon(NameColumn, StandardIcon(QStyle::SP_MediaPlay));
 	} else if (m_info->custom_settings) {
-		setIcon(NameColumn, QApplication::style()->standardIcon(QStyle::SP_FileIcon));
+		setIcon(NameColumn, StandardIcon(QStyle::SP_FileIcon));
 	} else {
-		setIcon(NameColumn, QApplication::style()->standardIcon(QStyle::SP_ComputerIcon));
+		setIcon(NameColumn, StandardIcon(QStyle::SP_ComputerIcon));
 	}
 }
 

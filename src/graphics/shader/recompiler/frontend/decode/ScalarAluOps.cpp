@@ -24,8 +24,7 @@ constexpr OpcodeMap SOP2_OPCODE_LIST[] = {
     {0x1cu, Opcode::S_XNOR_B32},        {0x1du, Opcode::S_XNOR_B64},
     {0x1eu, Opcode::S_LSHL_B32},        {0x1fu, Opcode::S_LSHL_B64},
     {0x20u, Opcode::S_LSHR_B32},        {0x21u, Opcode::S_LSHR_B64},
-    {0x22u, Opcode::S_ASHR_I32},        {0x23u, Opcode::S_ASHR_I64},
-    {0x24u, Opcode::S_BFM_B32},
+    {0x22u, Opcode::S_ASHR_I32},        {0x24u, Opcode::S_BFM_B32},
     {0x25u, Opcode::S_BFM_B64},         {0x26u, Opcode::S_MUL_I32},
     {0x27u, Opcode::S_BFE_U32},         {0x28u, Opcode::S_BFE_I32},
     {0x29u, Opcode::S_BFE_U64},         {0x2cu, Opcode::S_ABSDIFF_I32},
@@ -58,6 +57,7 @@ constexpr OpcodeMap SOP1_OPCODE_LIST[] = {
     {0x1eu, Opcode::S_BITSET1_B64},
     {0x1fu, Opcode::S_GETPC_B64},
     {0x20u, Opcode::S_SETPC_B64},
+    {0x21u, Opcode::S_SWAPPC_B64},
     {0x24u, Opcode::S_AND_SAVEEXEC_B64},
     {0x28u, Opcode::S_ORN2_SAVEEXEC_B64},
     {0x2du, Opcode::S_QUADMASK_B64},
@@ -106,7 +106,11 @@ constexpr OpcodeMap SOPP_OPCODE_LIST[] = {
     {0x10u, Opcode::S_SENDMSG},
     {0x12u, Opcode::S_TRAP},
     {0x16u, Opcode::S_TTRACEDATA},
+    // Branches on the hardware debug-mode bit, which is clear whenever no debugger is attached,
+    // so it always falls through. It is deliberately absent from the branch predicates below: the
+    // CFG should see an ordinary instruction, not an edge that can never be taken.
     {0x17u, Opcode::S_CBRANCH_CDBGSYS},
+    {0x1fu, Opcode::S_CODE_END},
     {0x20u, Opcode::S_INST_PREFETCH},
     {0x23u, Opcode::S_WAITCNT_DEPCTR},
 };
@@ -138,10 +142,6 @@ void DecodeSop1(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	inst.family    = Family::SOP1;
 	inst.opcode_id = opcode;
 	inst.opcode    = Detail::LookupOpcode(SOP1_OPS, opcode);
-	if (opcode == 0x21u && sdst == 125u) {
-		// S_SWAPPC_B64 with NULL discards the return PC, so it is a plain jump.
-		inst.opcode = Opcode::S_SETPC_B64;
-	}
 	SetRawWords(inst, code, word_index, 1);
 
 	if (inst.opcode == Opcode::UNSUPPORTED) {
@@ -157,6 +157,12 @@ void DecodeSop1(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 		case Opcode::S_SETPC_B64:
 			inst.src_count = 1;
 			inst.dst.kind  = OperandKind::Null;
+			DecodeScalarSource(ssrc0, pc, inst.src0);
+			ReadLiteralOperands(code, word_index, inst);
+			return;
+		case Opcode::S_SWAPPC_B64:
+			inst.src_count = 1;
+			DecodeScalarDestination(sdst, pc, inst.dst);
 			DecodeScalarSource(ssrc0, pc, inst.src0);
 			ReadLiteralOperands(code, word_index, inst);
 			return;

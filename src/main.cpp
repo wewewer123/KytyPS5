@@ -2,6 +2,7 @@
 #include "common/dateTime.h"
 #include "common/debug.h"
 #include "common/file.h"
+#include "common/magicEnum.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -11,7 +12,6 @@
 #include <charconv>
 #include <cstdio>
 #include <fmt/format.h>
-#include <magic_enum.hpp>
 
 using namespace Common;
 using namespace Emulator;
@@ -27,7 +27,8 @@ static std::string GetBuildString() {
 	std::string type = "????";
 #endif
 
-	std::string compiler = Debug::GetCompiler() + "-" + Debug::GetLinker();
+	std::string compiler =
+	    Debug::GetCompiler() + "-" + Debug::GetLinker() + "-" + Debug::GetBitness();
 
 	std::string str =
 	    fmt::format("{}, {}, ver = {}, git = {}, date = {}", type.c_str(), compiler.c_str(),
@@ -48,14 +49,12 @@ static void PrintUsage() {
 	    "  --user-name <name>                   Local user name (1-16 bytes). Default: Kyty.\n");
 	::printf("  --user-id <num>                      Local user ID. Default: %d.\n",
 	         Config::DEFAULT_USER_ID);
-	::printf("  --mic <name>                        Capture from this microphone; omit for silence.\n");
 	::printf(
 	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Mailbox.\n");
 	::printf(
 	    "  --gpu <index>                        Vulkan physical device index. Default: auto.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --vr                                 Enable the virtual VR headset.\n");
-	::printf("  --amd-cpu                            Apply AMD CPU instruction patches.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
 	::printf("  --vulkan-validation <true|false>     Enable Vulkan validation.\n");
@@ -168,11 +167,6 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			continue;
 		}
 
-		if (arg == "--amd-cpu") {
-			options.config.amd_cpu_enabled = true;
-			continue;
-		}
-
 		if (arg == "--playgo-hack") {
 			options.config.playgo_hack_enabled = true;
 			continue;
@@ -190,7 +184,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 #endif
 
-		if (!arg.starts_with("--")) {
+		if (!Common::StartsWith(arg, "--")) {
 			::printf("game input must be provided with --game\n");
 			return false;
 		}
@@ -247,8 +241,6 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid user ID: %s\n", value.c_str());
 				return false;
 			}
-		} else if (arg == "--mic") {
-			options.config.audio_input_device = value;
 		} else if (arg == "--present-mode") {
 			if (!ParseEnum(value, options.config.present_mode)) {
 				::printf("invalid present mode: %s\n", value.c_str());

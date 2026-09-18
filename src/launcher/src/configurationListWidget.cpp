@@ -1,5 +1,6 @@
 #include "configurationListWidget.h"
 
+#include "common.h"
 #include "compatibilityDatabase.h"
 #include "configuration.h"
 #include "configurationEditDialog.h"
@@ -231,7 +232,7 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	connect(m_ui->delete_button, &QToolButton::clicked, this,
 	        &ConfigurationListWidget::delete_configuartion);
 	connect(m_ui->cfgs_list, &QTreeWidget::currentItemChanged, this,
-	        &ConfigurationListWidget::SelectItem);
+	        &ConfigurationListWidget::list_currentItemChanged);
 	connect(m_ui->cfgs_list, &QTreeWidget::itemDoubleClicked, this,
 	        &ConfigurationListWidget::list_itemDoubleClicked);
 	connect(m_ui->cfgs_list, &QTreeWidget::customContextMenuRequested, this,
@@ -675,7 +676,7 @@ void ConfigurationListWidget::edit_configuration() {
 	}
 
 	ConfigurationEditDialog dlg(item->GetInfo(), this);
-	dlg.setWindowTitle(tr("Edit game settings"));
+	dlg.SetTitle(tr("Edit game settings"));
 
 	if (dlg.exec() == QDialog::Accepted) {
 		item->GetInfo().custom_settings = true;
@@ -707,7 +708,7 @@ void ConfigurationListWidget::edit_global_settings() {
 	info.name = tr("Global settings");
 
 	ConfigurationEditDialog dlg(info, this);
-	dlg.setWindowTitle(tr("Global settings"));
+	dlg.SetTitle(tr("Global settings"));
 	dlg.SetGameDirectories(m_game_dirs);
 
 	if (dlg.exec() == QDialog::Accepted) {
@@ -728,6 +729,15 @@ void ConfigurationListWidget::edit_input_mapping() {
 
 void ConfigurationListWidget::ClearCustomSettings(ConfigurationItem* item) {
 	delete m_custom_infos.take(item->GetInfo().game_path);
+}
+
+void ConfigurationListWidget::run_configuration() {
+	emit Run();
+}
+
+bool ConfigurationListWidget::CanViewSelectedTrophies() const {
+	return m_selected_item != nullptr &&
+	       TrophyViewerDialog::HasTrophyData(&m_selected_item->GetInfo());
 }
 
 void ConfigurationListWidget::ViewTrophies() {
@@ -842,6 +852,11 @@ void ConfigurationListWidget::SelectItem(QTreeWidgetItem* witem) {
 	emit Select();
 }
 
+void ConfigurationListWidget::list_currentItemChanged(QTreeWidgetItem* current,
+                                                      QTreeWidgetItem* /*previous*/) {
+	SelectItem(current);
+}
+
 void ConfigurationListWidget::list_itemDoubleClicked(QTreeWidgetItem* witem, int /*column*/) {
 	SelectItem(witem);
 	if (m_run_enabled) {
@@ -862,7 +877,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 	const bool has_trophy_data =
 	    item != nullptr && TrophyViewerDialog::HasTrophyData(&item->GetInfo());
 
-	QAction* action_run = menu.addAction(tr("Run"), this, SIGNAL(Run()));
+	QAction* action_run = menu.addAction(tr("Run"), this, SLOT(run_configuration()));
 	QAction* action_open_folder =
 	    menu.addAction(style()->standardIcon(QStyle::SP_DirOpenIcon), tr("Open game folder"), this,
 	                   SLOT(open_game_folder()));

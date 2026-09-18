@@ -149,7 +149,7 @@ static uint64_t KernelGetTscFrequencyNative() {
 		}
 
 		KernelReadTscNative();
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		Common::Thread::Sleep(1);
 		KernelReadTscNative();
 
 		const auto host_start = Common::Timer::QueryPerformanceCounter();
@@ -993,7 +993,7 @@ static void FreeDetachedThreads(void* /*arg*/) {
 	auto* pthread_pool = g_pthread_context->GetPthreadPool();
 
 	while (true) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+		Common::Thread::Sleep(10000);
 		pthread_pool->FreeDetachedThreads();
 	}
 }
@@ -1201,6 +1201,13 @@ static int32_t GetDstSeconds() {
 	return (local_tm.tm_isdst > 0 ? 3600 : 0);
 #endif
 }
+
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+static void sec_to_timeval(KernelTimeval* ts, double sec) {
+	ts->tv_sec  = static_cast<int64_t>(sec);
+	ts->tv_usec = static_cast<int64_t>((sec - static_cast<double>(ts->tv_sec)) * 1000000.0);
+}
+#endif
 
 static bool GetPosixClockId(KernelClockid clock_id, clockid_t* out) {
 	EXIT_IF(out == nullptr);
@@ -1743,6 +1750,8 @@ int KYTY_SYSV_ABI PthreadMutexDestroy(PthreadMutex* mutex) {
 }
 
 int KYTY_SYSV_ABI PthreadMutexLock(PthreadMutex* mutex) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::MutexLock);
+
 	// PRINT_NAME();
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
@@ -2845,6 +2854,8 @@ int KYTY_SYSV_ABI PthreadCondSignalto(PthreadCond* cond, Pthread thread) {
 
 int KYTY_SYSV_ABI PthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex,
                                        KernelUseconds usec) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::CondTimedwait);
+
 	// PRINT_NAME();
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
@@ -2929,6 +2940,8 @@ int KYTY_SYSV_ABI PthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex,
 
 int KYTY_SYSV_ABI PthreadCondTimedwaitAbs(PthreadCond* cond, PthreadMutex* mutex,
                                           const KernelTimespec* abstime) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::CondTimedwait);
+
 	// PRINT_NAME();
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
@@ -3010,6 +3023,8 @@ int KYTY_SYSV_ABI PthreadCondTimedwaitAbs(PthreadCond* cond, PthreadMutex* mutex
 }
 
 int KYTY_SYSV_ABI PthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::CondWait);
+
 	PRINT_NAME();
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
@@ -3164,6 +3179,10 @@ int PthreadGetPriorityForKernel(Pthread thread) {
 		return 256;
 	}
 	return 700;
+}
+
+const char* PthreadGetCurrentNameForKernel() {
+	return g_pthread_self != nullptr ? g_pthread_self->name.c_str() : "<null>";
 }
 
 int PthreadGetCurrentPriorityForKernel() {
@@ -3842,6 +3861,8 @@ void KYTY_SYSV_ABI KernelSetThreadDtors(thread_dtors_func_t dtors) {
 }
 
 int KYTY_SYSV_ABI KernelUsleep(KernelUseconds microseconds) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::Sleep);
+
 	Common::Timer t;
 	t.Start();
 	SleepMicroWithSignalPoll(microseconds);
@@ -3862,6 +3883,8 @@ unsigned int KYTY_SYSV_ABI KernelSleep(unsigned int seconds) {
 }
 
 int KYTY_SYSV_ABI KernelNanosleep(const KernelTimespec* rqtp, KernelTimespec* rmtp) {
+	Common::DebugWaitScope _dbg_wait(Common::DebugWaitKind::Sleep);
+
 	PRINT_NAME();
 
 	if (rqtp == nullptr) {

@@ -84,7 +84,8 @@ private:
 	bool          BUFFER_LOAD(const Decoder::Instruction& inst);
 	bool          BUFFER_STORE(const Decoder::Instruction& inst);
 	bool          BUFFER_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode opcode);
-	bool          IMAGE_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode opcode);
+	bool          IMAGE_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
+	                           IR::ValueOpcode opcode64);
 	bool DS_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode opcode, bool returns_value);
 	bool FLAT_LOAD(const Decoder::Instruction& inst);
 	bool FLAT_STORE(const Decoder::Instruction& inst);
@@ -176,7 +177,6 @@ private:
 	                     bool negate_result);
 	bool SimpleInteger(const Decoder::Instruction& inst, IR::ValueOpcode opcode, IR::Type type,
 	                   bool reverse, bool mask_shift_count, bool update_scc);
-	bool S_ASHR_I64(const Decoder::Instruction& inst);
 	bool ComposedIntegerBinary(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
 	                           bool negate_rhs, bool negate_result, bool update_scc);
 	bool V_AND_OR_B32(const Decoder::Instruction& inst);

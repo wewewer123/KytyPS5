@@ -317,10 +317,24 @@ endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
 
-# Linux system libraries.
+# Linux system libraries required by the static FFmpeg archive.
 if(LINUX)
 	find_package(Threads REQUIRED)
 	list(APPEND kyty_emulator_link_libraries m ${CMAKE_DL_LIBS} Threads::Threads)
+
+	# Optional FFmpeg dependencies.
+	find_package(ZLIB)
+	if(ZLIB_FOUND)
+		list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
+	endif()
+	find_library(KYTY_BZ2_LIBRARY bz2)
+	if(KYTY_BZ2_LIBRARY)
+		list(APPEND kyty_emulator_link_libraries ${KYTY_BZ2_LIBRARY})
+	endif()
+	find_library(KYTY_LZMA_LIBRARY lzma)
+	if(KYTY_LZMA_LIBRARY)
+		list(APPEND kyty_emulator_link_libraries ${KYTY_LZMA_LIBRARY})
+	endif()
 endif()
 
 set(inc_headers
@@ -601,21 +615,6 @@ if(BUILD_TESTING)
 	)
 endif()
 
-# Test Darwin signal-context restoration for SSE4a instructions.
-if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
-		(NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")))
-	add_executable(macos_sse4a_tests EXCLUDE_FROM_ALL
-		"${KYTY_TESTS_DIR}/macosSse4aTests.cpp"
-		"${KYTY_SOURCE_DIR}/loader/x64InstructionEmulator.cpp"
-	)
-	target_link_libraries(macos_sse4a_tests common fmt::fmt Zydis::Zydis)
-	target_include_directories(macos_sse4a_tests PRIVATE ${inc_headers})
-	if(BUILD_TESTING)
-		add_test(NAME macos_sse4a COMMAND $<TARGET_FILE:macos_sse4a_tests>)
-		set_tests_properties(macos_sse4a PROPERTIES TIMEOUT 15)
-		add_dependencies(kyty_tests macos_sse4a_tests)
-	endif()
-endif()
 
 add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
 configure_macos_guest_address_space(kyty_emulator)

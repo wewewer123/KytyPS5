@@ -262,25 +262,35 @@ struct CommandBuffer {
 		     reserved_dw);
 	}
 
-	[[nodiscard]] KYTY_SYSV_ABI uint64_t GetAvailableSizeDW() const {
-		// Interpret the signed cursor distance as an unsigned 64-bit DWORD count.
-		const auto distance = static_cast<int64_t>(reinterpret_cast<uintptr_t>(cursor_down) -
-		                                           reinterpret_cast<uintptr_t>(cursor_up));
-		const auto available = static_cast<uint64_t>(distance >> 2);
+	[[nodiscard]] KYTY_SYSV_ABI uint32_t GetAvailableSizeDW() const {
+		if (cursor_up == nullptr || cursor_down == nullptr || cursor_down <= cursor_up) {
+			return 0;
+		}
+
+		auto available = static_cast<uint64_t>(cursor_down - cursor_up);
 		if (available <= reserved_dw) {
 			return 0;
 		}
-		return available - reserved_dw;
+		if (available - reserved_dw > UINT32_MAX) {
+			LOGF_COLOR(
+			    Log::Color::Red,
+			    "\t command buffer has suspiciously large free space: cursor_up = 0x%016" PRIx64
+			    ", cursor_down = 0x%016" PRIx64 ", reserved_dw = %" PRIu32 "\n",
+			    reinterpret_cast<uint64_t>(cursor_up), reinterpret_cast<uint64_t>(cursor_down),
+			    reserved_dw);
+			return UINT32_MAX;
+		}
+		return static_cast<uint32_t>(available - reserved_dw);
 	}
 
 	KYTY_SYSV_ABI bool ReserveDW(uint32_t num_dw) {
-		const uint64_t remaining = GetAvailableSizeDW();
+		uint32_t remaining = GetAvailableSizeDW();
 		if (num_dw > remaining) {
 			if (callback == nullptr) {
 				LOGF_COLOR(
 				    Log::Color::Red,
 				    "\t command buffer exhausted and has no grow callback: requested = %" PRIu32
-				    ", remaining = %" PRIu64 ", reserved_dw = %" PRIu32 "\n",
+				    ", remaining = %" PRIu32 ", reserved_dw = %" PRIu32 "\n",
 				    num_dw, remaining, reserved_dw);
 				DbgDump();
 				return false;
@@ -290,7 +300,7 @@ struct CommandBuffer {
 			if (!result) {
 				LOGF_COLOR(Log::Color::Red,
 				           "\t command buffer grow callback failed: requested = %" PRIu32
-				           ", remaining = %" PRIu64 ", reserved_dw = %" PRIu32 "\n",
+				           ", remaining = %" PRIu32 ", reserved_dw = %" PRIu32 "\n",
 				           num_dw, remaining, reserved_dw);
 				DbgDump();
 				return false;
@@ -298,7 +308,7 @@ struct CommandBuffer {
 			if (GetAvailableSizeDW() < num_dw) {
 				LOGF_COLOR(Log::Color::Red,
 				           "\t command buffer grow callback did not provide enough space: "
-				           "requested = %" PRIu32 ", remaining = %" PRIu64
+				           "requested = %" PRIu32 ", remaining = %" PRIu32
 				           ", reserved_dw = %" PRIu32 "\n",
 				           num_dw, GetAvailableSizeDW(), reserved_dw);
 				DbgDump();
@@ -3929,9 +3939,13 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
 	} else if (op == Pm4::IT_EVENT_WRITE_EOP) {
 		cmd[2] = static_cast<uint32_t>(vaddr & 0xffffffffu);
 		cmd[3] = (cmd[3] & 0xffff0000u) | static_cast<uint32_t>((vaddr >> 32u) & 0xffffu);
+	} else if (cmd[0] == 0) {
+		// The address may be patched into the template before the packet itself is
+		// built. The builder emits the release-mem layout, so patch where it will land.
+		cmd[3] = static_cast<uint32_t>(vaddr & 0xffffffffu);
+		cmd[4] = static_cast<uint32_t>((vaddr >> 32u) & 0xffffffffu);
 	} else {
-		EXIT("unsupported queueEndOfPipeAction packet for address patch: 0x%08" PRIx32 "\n",
-		     cmd[0]);
+		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
 
 	return OK;
@@ -3950,7 +3964,13 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchData(uint32_t* cmd, uint64_t data)
 	const bool is_release_mem = op == Pm4::IT_RELEASE_MEM ||
 	                            (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_RELEASE_MEM);
 	if (!is_release_mem) {
-		return GRAPHICS5_ERROR_INVALID_PACKET;
+		if (cmd[0] != 0) {
+			return GRAPHICS5_ERROR_INVALID_PACKET;
+		}
+		// Same template-before-build case as the address patch.
+		cmd[5] = static_cast<uint32_t>(data & 0xffffffffu);
+		cmd[6] = static_cast<uint32_t>((data >> 32u) & 0xffffffffu);
+		return OK;
 	}
 
 	const auto interrupt = (cmd[2] >> 24u) & 0x7u;

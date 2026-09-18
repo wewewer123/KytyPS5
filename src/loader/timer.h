@@ -9,6 +9,8 @@ namespace Loader::Timer {
 void         Start();
 double       GetTimeMs();
 Common::Time GetTime();
+uint64_t     GetCounter();
+uint64_t     GetFrequency();
 
 struct Lifecycle {
 	static constexpr const char* name       = "Timer";

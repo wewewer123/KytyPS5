@@ -376,7 +376,7 @@ int KYTY_SYSV_ABI SaveDataDirNameSearch(const SaveDataDirNameSearchCond* cond,
 	if (Common::File::IsDirectoryExisting(root)) {
 		for (const auto& entry: Common::File::GetDirEntries(root)) {
 			if (!entry.is_file && entry.name != "." && entry.name != ".." &&
-			    !entry.name.starts_with("sce_")) {
+			    !Common::StartsWith(entry.name, "sce_")) {
 				if (cond->dir_name == nullptr || cond->dir_name->data[0] == '\0' ||
 				    dir_name_match(Common::ToLower(entry.name).c_str(),
 				                   Common::ToLower(std::string(cond->dir_name->data)).c_str())) {
@@ -583,22 +583,22 @@ int KYTY_SYSV_ABI SaveDataTransferringMount(const SaveDataTransferringMount* mou
                                             SaveDataMountResult*             mount_result) {
 	PRINT_NAME();
 
-	if (mount == nullptr || mount_result == nullptr || mount->title_id == nullptr ||
-	    mount->dir_name == nullptr) {
+	if (mount == nullptr || mount_result == nullptr || mount->dir_name == nullptr) {
 		return SAVE_DATA_ERROR_PARAMETER;
 	}
 
 	LOGF("\t user_id  = %" PRId32 "\n"
 	     "\t title_id = %s\n"
 	     "\t dir_name = %s\n",
-	     mount->user_id, mount->title_id->data, mount->dir_name->data);
+	     mount->user_id, mount->title_id != nullptr ? mount->title_id->data : "<null>",
+	     mount->dir_name->data);
 
 	*mount_result = {};
 
 	Common::LockGuard lock(g_mount_mutex);
 	const std::string dir_name = mount->dir_name->data;
 	const std::string mount_dir =
-	    std::string(SAVE_DATA_DIR) + "/" + mount->title_id->data + "/" + dir_name;
+	    std::string(SAVE_DATA_DIR) + "/" + get_title_id() + "/" + dir_name;
 	const int slot = g_mount_slots.FindAvailable(dir_name);
 	if (slot == SaveDataMountSlots::BUSY) {
 		return SAVE_DATA_ERROR_BUSY;
@@ -608,10 +608,10 @@ int KYTY_SYSV_ABI SaveDataTransferringMount(const SaveDataTransferringMount* mou
 	}
 
 	if (!Common::File::IsDirectoryExisting(mount_dir)) {
-		return SAVE_DATA_ERROR_NOT_FOUND;
+		Common::File::CreateDirectories(mount_dir);
 	}
 
-	return mount_save_data(slot, dir_name, mount_dir, 0, mount_result);
+	return mount_save_data(slot, dir_name, mount_dir, 1, mount_result);
 }
 
 int KYTY_SYSV_ABI SaveDataUmount2(uint32_t mode, const SaveDataMountPoint* mount_point) {

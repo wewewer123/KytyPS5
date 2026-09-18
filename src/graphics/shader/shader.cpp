@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/magicEnum.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "graphics/guest_gpu/gpu_defs.h"
@@ -21,6 +22,7 @@
 #include <atomic>
 #include <bit>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -88,6 +90,35 @@ static ShaderMappedData ShaderGetMappedData(uint64_t addr, const char* label) {
 	}
 
 	EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);
+}
+
+static bool ShaderTryGetMappedData(uint64_t addr, ShaderMappedData& data) {
+	EXIT_IF(g_shader_map == nullptr);
+
+	std::scoped_lock lock(g_shader_map_mutex);
+
+	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
+		data = iter->second;
+		return true;
+	}
+
+	return false;
+}
+
+// A merged shader hands control to its back half with a tail call through s[6:7]. The handoff is
+// the last instruction of the code, which S_CODE_END separates from the binary's metadata.
+static bool ShaderEndsWithHandoff(std::span<const uint32_t> code) {
+	constexpr uint32_t CodeEnd = 0xbf9f0000u;
+	const auto         end     = std::find(code.begin(), code.end(), CodeEnd);
+	if (end == code.begin() || end == code.end()) {
+		return false;
+	}
+	const uint32_t word = *(end - 1);
+	if (((word >> 23u) & 0x1ffu) != 0x17du) { // SOP1
+		return false;
+	}
+	const uint32_t opcode = (word >> 8u) & 0xffu;
+	return (opcode == 0x20u || opcode == 0x21u) && (word & 0xffu) == 6u;
 }
 
 static const ShaderBinaryInfo* GetBinaryInfo(const uint32_t* code) {
@@ -583,9 +614,6 @@ static void ShaderGetStaticInputInfoPS(
 	if ((active_inputs & 0x00000002u) != 0) {
 		ps_info.ps_perspective_center_vgpr = (active_inputs & 0x00000001u) != 0 ? 2u : 0u;
 	}
-	if ((active_inputs & 0x00000004u) != 0) {
-		ps_info.ps_perspective_centroid_vgpr = 2u * std::popcount(active_inputs & 0x3u);
-	}
 	for (uint32_t i = 0; i < data.num_input_semantics && i < ps_info.input_num && i < 32u; i++) {
 		const auto& semantic = data.input_semantics[i];
 		if (semantic.is_custom != 0 && semantic.is_f16 == 0) {
@@ -709,7 +737,6 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	key.push_back(info.ps_system_input_base);
 	key.push_back(info.custom_interpolation_mask);
 	key.push_back(info.ps_perspective_center_vgpr);
-	key.push_back(info.ps_perspective_centroid_vgpr);
 	key.push_back(static_cast<uint32_t>(info.ps_pos_x));
 	key.push_back(static_cast<uint32_t>(info.ps_pos_y));
 	key.push_back(static_cast<uint32_t>(info.ps_pos_z));
@@ -796,7 +823,6 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 	const auto& group = user_config.GetGeControl();
 	if ((user_config.GetPrimType() != Prospero::PrimitiveType::kPointList &&
 	     user_config.GetPrimType() != Prospero::PrimitiveType::kLineList &&
-	     user_config.GetPrimType() != Prospero::PrimitiveType::kTriFan &&
 	     user_config.GetPrimType() != Prospero::PrimitiveType::kTriStrip &&
 	     user_config.GetPrimType() != Prospero::PrimitiveType::kTriList) ||
 	    sh.m_vgtGsOutPrimType != 2u || sh.m_vgtGsMaxVertOut < 3u ||
@@ -892,9 +918,34 @@ ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderR
                             ShaderComputeInputInfo& info) {
 	const auto data = ShaderGetMappedData(regs.cs_regs.data_addr, "ShaderGetInputInfoCS():");
 	ShaderGetStaticInputInfoCS(regs, sh, data, info);
-	return GetShaderParams(
-	    regs.cs_regs.data_addr, "ShaderRecompiler CS", GetDeclaredShaderHash(regs.cs_regs.data_addr),
-	    std::span<const uint32_t>(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr), data);
+	const std::span<const uint32_t> user_data(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr);
+	auto                            params = GetShaderParams(
+        regs.cs_regs.data_addr, "ShaderRecompiler CS", GetDeclaredShaderHash(regs.cs_regs.data_addr),
+        user_data, data);
+	if (!ShaderEndsWithHandoff(params.code)) {
+		return params;
+	}
+	// The dispatch passes the back half's address in the user data that preloads s[6:7].
+	if (user_data.size() < 8) {
+		EXIT("ShaderRecompiler CS shader=0x%016" PRIx64
+		     " tail-calls s[6:7] but the dispatch preloads only %" PRIu64 " user SGPRs\n",
+		     regs.cs_regs.data_addr, static_cast<uint64_t>(user_data.size()));
+	}
+	const auto back_addr =
+	    static_cast<uint64_t>(user_data[6]) | (static_cast<uint64_t>(user_data[7]) << 32u);
+	ShaderMappedData back {};
+	if (!ShaderTryGetMappedData(back_addr, back)) {
+		EXIT("ShaderRecompiler CS shader=0x%016" PRIx64
+		     " tail-calls 0x%016" PRIx64 ", which is not a registered shader\n",
+		     regs.cs_regs.data_addr, back_addr);
+	}
+	const auto back_params = GetShaderParams(back_addr, "ShaderRecompiler CS back",
+	                                         GetDeclaredShaderHash(back_addr), {}, back);
+	params.back_code       = back_params.code;
+	const uint64_t hashes[] = {params.hash, back_params.hash};
+	params.hash             = XXH3_64bits(hashes, sizeof(hashes));
+	info.scratch_size_dwords = std::max(info.scratch_size_dwords, back.scratch_size_dwords);
+	return params;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -962,7 +1013,6 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info) {
 	     "\t ps_system_input_base = %u\n"
 	     "\t custom_interpolation_mask = 0x%08" PRIx32 "\n"
 	     "\t ps_perspective_center_vgpr = %" PRIu32 "\n"
-	     "\t ps_perspective_centroid_vgpr = %" PRIu32 "\n"
 	     "\t ps_pos_x             = %s\n"
 	     "\t ps_pos_y             = %s\n"
 	     "\t ps_pos_z             = %s\n"
@@ -975,8 +1025,7 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info) {
 	     "\t ps_early_z           = %s\n"
 	     "\t ps_execute_on_noop   = %s\n",
 	     info.input_num, info.ps_system_input_base, info.custom_interpolation_mask,
-	     info.ps_perspective_center_vgpr, info.ps_perspective_centroid_vgpr,
-	     info.ps_pos_x ? "true" : "false",
+	     info.ps_perspective_center_vgpr, info.ps_pos_x ? "true" : "false",
 	     info.ps_pos_y ? "true" : "false", info.ps_pos_z ? "true" : "false",
 	     info.ps_pos_w ? "true" : "false", info.ps_front_face ? "true" : "false",
 	     info.ps_ancillary ? "true" : "false",
@@ -1003,6 +1052,10 @@ void ShaderDbgDumpInputInfo(const ShaderComputeInputInfo& info) {
 	     info.tg_size_en ? "true" : "false");
 	LOGF("\t threadgroup_id     = {%s, %s, %s}\n", info.group_id[0] ? "true" : "false",
 	     info.group_id[1] ? "true" : "false", info.group_id[2] ? "true" : "false");
+}
+
+bool ShaderAddressValid(uint64_t addr) {
+	return reinterpret_cast<const uint32_t*>(addr) != nullptr;
 }
 
 } // namespace Libs::Graphics

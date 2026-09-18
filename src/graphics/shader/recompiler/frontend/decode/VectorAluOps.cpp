@@ -83,6 +83,10 @@ constexpr Vop2OpcodeInfo VOP2_OPCODE_LIST[] = {
 
 constexpr auto VOP2_OPS = Detail::MakeOpcodeTable<0x40>(VOP2_OPCODE_LIST);
 
+constexpr Opcode LookupVop2Opcode(uint32_t encoding) {
+	return Detail::LookupOpcode(VOP2_OPS, encoding);
+}
+
 constexpr OpcodeMap VOP1_OPCODE_LIST[] = {
     {0x00u, Opcode::V_NOP},
     {0x01u, Opcode::V_MOV_B32},
@@ -246,8 +250,7 @@ constexpr VopcOpcodeInfo VOPC_OPCODE_LIST[] = {
     {0xf5u, Opcode::V_CMPX_NE_U64, false}, {0xc9u, Opcode::V_CMP_LT_F16},
     {0xcau, Opcode::V_CMP_EQ_F16},         {0xcbu, Opcode::V_CMP_LE_F16},
     {0xccu, Opcode::V_CMP_GT_F16},         {0xcdu, Opcode::V_CMP_LG_F16},
-    {0xceu, Opcode::V_CMP_GE_F16},         {0xebu, Opcode::V_CMP_NGT_F16},
-    {0xedu, Opcode::V_CMP_NEQ_F16},
+    {0xceu, Opcode::V_CMP_GE_F16},         {0xedu, Opcode::V_CMP_NEQ_F16},
     {0xd9u, Opcode::V_CMPX_LT_F16},        {0xdau, Opcode::V_CMPX_EQ_F16},
     {0xdbu, Opcode::V_CMPX_LE_F16},        {0xdcu, Opcode::V_CMPX_GT_F16},
     {0xdeu, Opcode::V_CMPX_GE_F16},        {0xfbu, Opcode::V_CMPX_NGT_F16},
@@ -371,7 +374,7 @@ Opcode LookupVop3Opcode(uint32_t opcode) {
 		if (IsUnsupportedVop3EncodedVop2Alias(opcode - 0x100u)) {
 			return Opcode::UNSUPPORTED;
 		}
-		return Detail::LookupOpcode(VOP2_OPS, opcode - 0x100u);
+		return LookupVop2Opcode(opcode - 0x100u);
 	}
 	if (opcode >= 0x180u && opcode <= 0x1ffu) {
 		return Detail::LookupOpcode(VOP3_ENCODED_VOP1_OPS, opcode - 0x180u);
@@ -513,7 +516,7 @@ struct Vop1SdwaRule {
 };
 
 constexpr Vop1SdwaRule VOP1_SDWA_RULES[] = {
-    {Opcode::V_MOV_B32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), SdwaSelBytes() | SdwaSelWords(),
+    {Opcode::V_MOV_B32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), SdwaSelWords(),
      SdwaSelWords() | SdwaSelFull(), false},
     {Opcode::V_CVT_F32_U32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), 0, 0, false},
     {Opcode::V_CVT_F32_I32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), 0, 0, false},
@@ -821,7 +824,6 @@ bool IsVopcFloatCompareOpcode(Opcode opcode) {
 		case Opcode::V_CMP_GT_F16:
 		case Opcode::V_CMP_LG_F16:
 		case Opcode::V_CMP_GE_F16:
-		case Opcode::V_CMP_NGT_F16:
 		case Opcode::V_CMP_NEQ_F16:
 		case Opcode::V_CMPX_LT_F16:
 		case Opcode::V_CMPX_EQ_F16:
@@ -1466,7 +1468,7 @@ void DecodeVop2(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	inst.pc        = pc;
 	inst.family    = Family::VOP2;
 	inst.opcode_id = opcode;
-	inst.opcode    = Detail::LookupOpcode(VOP2_OPS, opcode);
+	inst.opcode    = LookupVop2Opcode(opcode);
 	SetRawWords(inst, code, word_index, 1);
 
 	if (inst.opcode == Opcode::UNSUPPORTED) {

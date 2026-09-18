@@ -86,7 +86,6 @@ struct TileMipLayout {
 	uint32_t padded_height = 0;
 	uint32_t tail_x        = 0;
 	uint32_t tail_y        = 0;
-	bool     operator==(const TileMipLayout&) const = default;
 };
 
 struct TileSurfaceLayout {
